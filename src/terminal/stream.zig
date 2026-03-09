@@ -534,7 +534,7 @@ pub fn Stream(comptime Handler: type) type {
                 // to the scalar parser.
                 if (input[offset] != 0x1B) {
                     const rem = input[offset..];
-                    for (rem) |c| try self.nextUtf8(c);
+                    for (rem) |c| try self.next(c);
                     return;
                 }
 
