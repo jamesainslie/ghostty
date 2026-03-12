@@ -1630,6 +1630,52 @@ pub const Resize = struct {
     prompt_redraw: osc.semantic_prompt.Redraw = .false,
 };
 
+pub fn clearPromptForRedraw(
+    self: *Screen,
+    redraw: osc.semantic_prompt.Redraw,
+) ?Pin {
+    if (redraw == .false or self.cursor.semantic_content == .output) return null;
+
+    const start = switch (redraw) {
+        .false => unreachable,
+
+        .last => {
+            const page = &self.cursor.page_pin.node.data;
+            const row = self.cursor.page_row;
+            const cells = page.getCells(row);
+            self.clearCells(page, row, cells);
+            return self.cursor.page_pin.left(self.cursor.x);
+        },
+
+        .true => start: {
+            if (self.cursor.page_row.semantic_prompt != .none) {
+                var it = self.cursor.page_pin.promptIterator(
+                    .left_up,
+                    null,
+                );
+                if (it.next()) |pin| break :start pin;
+
+                log.warn("cursor on prompt line but promptIterator found no prompt", .{});
+            }
+
+            break :start self.cursor.page_pin.left(self.cursor.x);
+        },
+    };
+
+    // Clear cells from our start down. We replace it with spaces, and do not
+    // physically erase the rows (eraseRows) because the shell is going to
+    // expect this space to be available.
+    var it = start.rowIterator(.right_down, null);
+    while (it.next()) |pin| {
+        const page = &pin.node.data;
+        const row = pin.rowAndCell().row;
+        const cells = page.getCells(row);
+        self.clearCells(page, row, cells);
+    }
+
+    return start;
+}
+
 /// Resize the screen. The rows or cols can be bigger or smaller.
 ///
 /// If this returns an error, the screen is left in a likely garbage state.
@@ -1705,49 +1751,7 @@ pub inline fn resize(
     // would miss them. By checking semantic_content, we assume that if the
     // cursor is on anything other than command output, we're at a prompt/input
     // line and should clear from there.
-    if (opts.prompt_redraw != .false and
-        self.cursor.semantic_content != .output)
-    prompt: {
-        switch (opts.prompt_redraw) {
-            .false => unreachable,
-
-            // For `.last`, only clear the current line where the cursor is.
-            // For `.true`, clear all prompt lines starting from the beginning.
-            .last => {
-                const page = &self.cursor.page_pin.node.data;
-                const row = self.cursor.page_row;
-                const cells = page.getCells(row);
-                self.clearCells(page, row, cells);
-            },
-
-            .true => {
-                const start = start: {
-                    var it = self.cursor.page_pin.promptIterator(
-                        .left_up,
-                        null,
-                    );
-                    break :start it.next() orelse {
-                        // This should never happen because promptIterator should always
-                        // find a prompt if we already verified our row is some kind of
-                        // prompt.
-                        log.warn("cursor on prompt line but promptIterator found no prompt", .{});
-                        break :prompt;
-                    };
-                };
-
-                // Clear cells from our start down. We replace it with spaces,
-                // and do not physically erase the rows (eraseRows) because the
-                // shell is going to expect this space to be available.
-                var it = start.rowIterator(.right_down, null);
-                while (it.next()) |pin| {
-                    const page = &pin.node.data;
-                    const row = pin.rowAndCell().row;
-                    const cells = page.getCells(row);
-                    self.clearCells(page, row, cells);
-                }
-            },
-        }
-    }
+    _ = self.clearPromptForRedraw(opts.prompt_redraw);
 
     // Perform the resize operation.
     try self.pages.resize(.{

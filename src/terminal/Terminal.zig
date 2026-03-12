@@ -1169,10 +1169,17 @@ pub fn semanticPrompt(
         .fresh_line => try self.semanticPromptFreshLine(),
 
         .fresh_line_new_prompt => {
-            // "First do a fresh-line."
-            try self.semanticPromptFreshLine();
-
             const screen: *Screen = self.screens.active;
+
+            // If the shell redraws while the cursor is still on the prompt or
+            // input, redraw in place instead of advancing to a duplicate row.
+            if (screen.clearPromptForRedraw(self.flags.shell_redraws_prompt)) |start| {
+                const pt = screen.pages.pointFromPin(.active, start) orelse unreachable;
+                screen.cursorAbsolute(0, @intCast(pt.active.y));
+            } else {
+                // "First do a fresh-line."
+                try self.semanticPromptFreshLine();
+            }
 
             // "Subsequent text (until a OSC "133;B" or OSC "133;I" command)
             // is a prompt string (as if followed by OSC 133;P;k=i\007)."
@@ -12214,6 +12221,48 @@ test "Terminal: OSC133A click_events=1 sets click to click_events" {
     });
 
     try testing.expectEqual(.click_events, t.screens.active.semantic_prompt.click);
+}
+
+test "Terminal: OSC133A redraw on input line reuses the prompt row" {
+    const alloc = testing.allocator;
+    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
+    defer t.deinit(alloc);
+
+    try t.semanticPrompt(.{
+        .action = .fresh_line_new_prompt,
+        .options_unvalidated = "cl=line",
+    });
+    for ("$ ") |c| try t.print(c);
+    try t.semanticPrompt(.init(.end_prompt_start_input));
+    for ("echo") |c| try t.print(c);
+
+    try testing.expectEqual(@as(usize, 0), t.screens.active.cursor.y);
+    try testing.expectEqual(@as(usize, 6), t.screens.active.cursor.x);
+
+    try t.semanticPrompt(.{
+        .action = .fresh_line_new_prompt,
+        .options_unvalidated = "cl=line",
+    });
+
+    try testing.expectEqual(@as(usize, 0), t.screens.active.cursor.y);
+    try testing.expectEqual(@as(usize, 0), t.screens.active.cursor.x);
+    try testing.expectEqual(.prompt, t.screens.active.cursor.semantic_content);
+
+    {
+        const list_cell = t.screens.active.pages.getCell(.{ .active = .{
+            .x = 0,
+            .y = 0,
+        } }).?;
+        try testing.expectEqual(.prompt, list_cell.row.semantic_prompt);
+    }
+
+    {
+        const list_cell = t.screens.active.pages.getCell(.{ .active = .{
+            .x = 0,
+            .y = 1,
+        } }).?;
+        try testing.expectEqual(.none, list_cell.row.semantic_prompt);
+    }
 }
 
 test "Terminal: OSC133A click_events=0 does not set click_events" {
