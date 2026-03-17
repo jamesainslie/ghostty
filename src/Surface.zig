@@ -39,6 +39,17 @@ const SurfaceMouse = @import("surface_mouse.zig");
 
 const log = std.log.scoped(.surface);
 
+fn cmuxSurfaceBootstrapTraceEnabled() bool {
+    return std.posix.getenv("CMUX_SURFACE_BOOTSTRAP_DEBUG") != null or
+        std.posix.getenv("CMUX_PANE_STRIP_MOTION_SETUP") != null or
+        std.posix.getenv("CMUX_UI_TEST_PANE_STRIP_MOTION_SETUP") != null;
+}
+
+fn cmuxSurfaceBootstrapTrace(comptime fmt: []const u8, args: anytype) void {
+    if (!cmuxSurfaceBootstrapTraceEnabled()) return;
+    std.debug.print("[CMUXSURFACE-CORE] " ++ fmt ++ "\n", args);
+}
+
 // The renderer implementation to use.
 const Renderer = rendererpkg.Renderer;
 
@@ -464,6 +475,8 @@ pub fn init(
     rt_app: *apprt.runtime.App,
     rt_surface: *apprt.runtime.Surface,
 ) !void {
+    cmuxSurfaceBootstrapTrace("Surface.init begin", .{});
+
     // Apply our conditional state. If we fail to apply the conditional state
     // then we log and attempt to move forward with the old config.
     var config_: ?configpkg.Config = config_original.changeConditionalState(
@@ -485,17 +498,32 @@ pub fn init(
     } else config_original;
 
     // Get our configuration
-    var derived_config = try DerivedConfig.init(alloc, config);
+    var derived_config = DerivedConfig.init(alloc, config) catch |err| {
+        cmuxSurfaceBootstrapTrace("Surface.init DerivedConfig.init failed err={}", .{err});
+        return err;
+    };
     errdefer derived_config.deinit();
+    cmuxSurfaceBootstrapTrace("Surface.init DerivedConfig.init ok", .{});
 
     // Initialize our renderer with our initialized surface.
-    try Renderer.surfaceInit(rt_surface);
+    Renderer.surfaceInit(rt_surface) catch |err| {
+        cmuxSurfaceBootstrapTrace("Surface.init Renderer.surfaceInit failed err={}", .{err});
+        return err;
+    };
+    cmuxSurfaceBootstrapTrace("Surface.init Renderer.surfaceInit ok", .{});
 
     // Determine our DPI configurations so we can properly configure
     // font points to pixels and handle other high-DPI scaling factors.
-    const content_scale = try rt_surface.getContentScale();
+    const content_scale = rt_surface.getContentScale() catch |err| {
+        cmuxSurfaceBootstrapTrace("Surface.init getContentScale failed err={}", .{err});
+        return err;
+    };
     const x_dpi = content_scale.x * font.face.default_dpi;
     const y_dpi = content_scale.y * font.face.default_dpi;
+    cmuxSurfaceBootstrapTrace(
+        "Surface.init contentScale ok x={d:.3} y={d:.3}",
+        .{ content_scale.x, content_scale.y },
+    );
     log.debug("xscale={} yscale={} xdpi={} ydpi={}", .{
         content_scale.x,
         content_scale.y,
@@ -512,16 +540,23 @@ pub fn init(
 
     // Setup our font group. This will reuse an existing font group if
     // it was already loaded.
-    const font_grid_key, const font_grid = try app.font_grid_set.ref(
+    const font_grid_key, const font_grid = app.font_grid_set.ref(
         &derived_config.font,
         font_size,
-    );
+    ) catch |err| {
+        cmuxSurfaceBootstrapTrace("Surface.init font_grid_set.ref failed err={}", .{err});
+        return err;
+    };
+    cmuxSurfaceBootstrapTrace("Surface.init font_grid_set.ref ok", .{});
 
     // Build our size struct which has all the sizes we need.
     const size: rendererpkg.Size = size: {
         var size: rendererpkg.Size = .{
             .screen = screen: {
-                const surface_size = try rt_surface.getSize();
+                const surface_size = rt_surface.getSize() catch |err| {
+                    cmuxSurfaceBootstrapTrace("Surface.init getSize failed err={}", .{err});
+                    return err;
+                };
                 break :screen .{
                     .width = surface_size.width,
                     .height = surface_size.height,
@@ -544,38 +579,62 @@ pub fn init(
 
         break :size size;
     };
+    cmuxSurfaceBootstrapTrace(
+        "Surface.init size ok screen={}x{} cell={}x{}",
+        .{ size.screen.width, size.screen.height, size.cell.width, size.cell.height },
+    );
 
     // Create our terminal grid with the initial size
     const app_mailbox: App.Mailbox = .{ .rt_app = rt_app, .mailbox = &app.mailbox };
-    var renderer_impl = try Renderer.init(alloc, .{
-        .config = try .init(alloc, config),
+    const renderer_config = Renderer.DerivedConfig.init(alloc, config) catch |err| {
+        cmuxSurfaceBootstrapTrace("Surface.init renderer config init failed err={}", .{err});
+        return err;
+    };
+    var renderer_impl = Renderer.init(alloc, .{
+        .config = renderer_config,
         .font_grid = font_grid,
         .size = size,
         .surface_mailbox = .{ .surface = self, .app = app_mailbox },
         .rt_surface = rt_surface,
         .thread = &self.renderer_thread,
-    });
+    }) catch |err| {
+        cmuxSurfaceBootstrapTrace("Surface.init Renderer.init failed err={}", .{err});
+        return err;
+    };
     errdefer renderer_impl.deinit();
+    cmuxSurfaceBootstrapTrace("Surface.init Renderer.init ok", .{});
 
     // The mutex used to protect our renderer state.
-    const mutex = try alloc.create(std.Thread.Mutex);
+    const mutex = alloc.create(std.Thread.Mutex) catch |err| {
+        cmuxSurfaceBootstrapTrace("Surface.init mutex alloc failed err={}", .{err});
+        return err;
+    };
     mutex.* = .{};
     errdefer alloc.destroy(mutex);
+    cmuxSurfaceBootstrapTrace("Surface.init mutex alloc ok", .{});
 
     // Create the renderer thread
-    var render_thread = try rendererpkg.Thread.init(
+    var render_thread = rendererpkg.Thread.init(
         alloc,
         config,
         rt_surface,
         &self.renderer,
         &self.renderer_state,
         app_mailbox,
-    );
+    ) catch |err| {
+        cmuxSurfaceBootstrapTrace("Surface.init renderer thread init failed err={}", .{err});
+        return err;
+    };
     errdefer render_thread.deinit();
+    cmuxSurfaceBootstrapTrace("Surface.init renderer thread init ok", .{});
 
     // Create the IO thread
-    var io_thread = try termio.Thread.init(alloc);
+    var io_thread = termio.Thread.init(alloc) catch |err| {
+        cmuxSurfaceBootstrapTrace("Surface.init io thread init failed err={}", .{err});
+        return err;
+    };
     errdefer io_thread.deinit();
+    cmuxSurfaceBootstrapTrace("Surface.init io thread init ok", .{});
 
     self.* = .{
         .alloc = alloc,
@@ -627,12 +686,13 @@ pub fn init(
                 std.process.EnvMap.init(alloc);
         };
         errdefer env.deinit();
+        cmuxSurfaceBootstrapTrace("Surface.init defaultTermioEnv ok", .{});
 
         // don't leak GHOSTTY_LOG to any subprocesses
         env.remove("GHOSTTY_LOG");
 
         // Initialize our IO backend
-        var io_exec = try termio.Exec.init(alloc, .{
+        var io_exec = termio.Exec.init(alloc, .{
             .command = command,
             .env = env,
             .env_override = config.env,
@@ -644,24 +704,39 @@ pub fn init(
             .term = config.term,
             .rt_pre_exec_info = .init(config),
             .rt_post_fork_info = .init(config),
-        });
+        }) catch |err| {
+            cmuxSurfaceBootstrapTrace("Surface.init termio.Exec.init failed err={}", .{err});
+            return err;
+        };
         errdefer io_exec.deinit();
+        cmuxSurfaceBootstrapTrace("Surface.init termio.Exec.init ok", .{});
 
         // Initialize our IO mailbox
-        var io_mailbox = try termio.Mailbox.initSPSC(alloc);
+        var io_mailbox = termio.Mailbox.initSPSC(alloc) catch |err| {
+            cmuxSurfaceBootstrapTrace("Surface.init termio.Mailbox.initSPSC failed err={}", .{err});
+            return err;
+        };
         errdefer io_mailbox.deinit(alloc);
+        cmuxSurfaceBootstrapTrace("Surface.init termio.Mailbox.initSPSC ok", .{});
 
-        try termio.Termio.init(&self.io, alloc, .{
+        termio.Termio.init(&self.io, alloc, .{
             .size = size,
             .full_config = config,
-            .config = try termio.Termio.DerivedConfig.init(alloc, config),
+            .config = termio.Termio.DerivedConfig.init(alloc, config) catch |err| {
+                cmuxSurfaceBootstrapTrace("Surface.init Termio.DerivedConfig.init failed err={}", .{err});
+                return err;
+            },
             .backend = .{ .exec = io_exec },
             .mailbox = io_mailbox,
             .renderer_state = &self.renderer_state,
             .renderer_wakeup = render_thread.wakeup,
             .renderer_mailbox = render_thread.mailbox,
             .surface_mailbox = .{ .surface = self, .app = app_mailbox },
-        });
+        }) catch |err| {
+            cmuxSurfaceBootstrapTrace("Surface.init termio.Termio.init failed err={}", .{err});
+            return err;
+        };
+        cmuxSurfaceBootstrapTrace("Surface.init termio.Termio.init ok", .{});
     }
     // Outside the block, IO has now taken ownership of our temporary state
     // so we can just defer this and not the subcomponents.
@@ -691,11 +766,19 @@ pub fn init(
     // init stuff we should get rid of this. But this is required because
     // sizeCallback does retina-aware stuff we don't do here and don't want
     // to duplicate.
-    try self.resize(self.size.screen);
+    self.resize(self.size.screen) catch |err| {
+        cmuxSurfaceBootstrapTrace("Surface.init resize failed err={}", .{err});
+        return err;
+    };
+    cmuxSurfaceBootstrapTrace("Surface.init resize ok", .{});
 
     // Give the renderer one more opportunity to finalize any surface
     // setup on the main thread prior to spinning up the rendering thread.
-    try renderer_impl.finalizeSurfaceInit(rt_surface);
+    renderer_impl.finalizeSurfaceInit(rt_surface) catch |err| {
+        cmuxSurfaceBootstrapTrace("Surface.init finalizeSurfaceInit failed err={}", .{err});
+        return err;
+    };
+    cmuxSurfaceBootstrapTrace("Surface.init finalizeSurfaceInit ok", .{});
 
     // Start our renderer thread
     self.renderer_thr = try std.Thread.spawn(

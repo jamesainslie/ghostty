@@ -43,6 +43,17 @@ const DisplayLink = switch (builtin.os.tag) {
 
 const log = std.log.scoped(.generic_renderer);
 
+fn cmuxSurfaceBootstrapTraceEnabled() bool {
+    return std.posix.getenv("CMUX_SURFACE_BOOTSTRAP_DEBUG") != null or
+        std.posix.getenv("CMUX_PANE_STRIP_MOTION_SETUP") != null or
+        std.posix.getenv("CMUX_UI_TEST_PANE_STRIP_MOTION_SETUP") != null;
+}
+
+fn cmuxSurfaceBootstrapTrace(comptime fmt: []const u8, args: anytype) void {
+    if (!cmuxSurfaceBootstrapTraceEnabled()) return;
+    std.debug.print("[CMUXRENDERER] " ++ fmt ++ "\n", args);
+}
+
 /// Create a renderer type with the provided graphics API wrapper.
 ///
 /// The graphics API wrapper must provide the interface outlined below.
@@ -272,8 +283,11 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 var result: SwapChain = .{ .frames = undefined };
 
                 // Initialize all of our frame state.
-                for (&result.frames) |*frame| {
-                    frame.* = try FrameState.init(api, custom_shaders);
+                for (&result.frames, 0..) |*frame, index| {
+                    frame.* = FrameState.init(api, custom_shaders) catch |err| {
+                        cmuxSurfaceBootstrapTrace("SwapChain.init frame={} failed err={}", .{ index, err });
+                        return err;
+                    };
                 }
 
                 return result;
@@ -350,7 +364,10 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 // Uniform buffer contains exactly 1 uniform struct. The
                 // uniform data will be undefined so this must be set before
                 // a frame is drawn.
-                var uniforms = try UniformBuffer.init(api.uniformBufferOptions(), 1);
+                var uniforms = UniformBuffer.init(api.uniformBufferOptions(), 1) catch |err| {
+                    cmuxSurfaceBootstrapTrace("FrameState.init uniforms failed err={}", .{err});
+                    return err;
+                };
                 errdefer uniforms.deinit();
 
                 // Create GPU buffers for our cells.
@@ -359,45 +376,66 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 // too small, but they will be resized as needed. This is a bit
                 // wasteful but since it's a one-time thing it's not really a
                 // huge concern.
-                var cells = try CellTextBuffer.init(api.fgBufferOptions(), 1);
+                var cells = CellTextBuffer.init(api.fgBufferOptions(), 1) catch |err| {
+                    cmuxSurfaceBootstrapTrace("FrameState.init cells failed err={}", .{err});
+                    return err;
+                };
                 errdefer cells.deinit();
-                var cells_bg = try CellBgBuffer.init(api.bgBufferOptions(), 1);
+                var cells_bg = CellBgBuffer.init(api.bgBufferOptions(), 1) catch |err| {
+                    cmuxSurfaceBootstrapTrace("FrameState.init cells_bg failed err={}", .{err});
+                    return err;
+                };
                 errdefer cells_bg.deinit();
 
                 // Create a GPU buffer for our background image info.
-                var bg_image_buffer = try BgImageBuffer.init(
+                var bg_image_buffer = BgImageBuffer.init(
                     api.bgImageBufferOptions(),
                     1,
-                );
+                ) catch |err| {
+                    cmuxSurfaceBootstrapTrace("FrameState.init bg_image_buffer failed err={}", .{err});
+                    return err;
+                };
                 errdefer bg_image_buffer.deinit();
 
                 // Initialize our textures for our font atlas.
                 //
                 // As with the buffers above, we start these off as small
                 // as possible since they'll inevitably be resized anyway.
-                const grayscale = try api.initAtlasTexture(&.{
+                const grayscale = api.initAtlasTexture(&.{
                     .data = undefined,
                     .size = 1,
                     .format = .grayscale,
-                });
+                }) catch |err| {
+                    cmuxSurfaceBootstrapTrace("FrameState.init grayscale atlas failed err={}", .{err});
+                    return err;
+                };
                 errdefer grayscale.deinit();
-                const color = try api.initAtlasTexture(&.{
+                const color = api.initAtlasTexture(&.{
                     .data = undefined,
                     .size = 1,
                     .format = .bgra,
-                });
+                }) catch |err| {
+                    cmuxSurfaceBootstrapTrace("FrameState.init color atlas failed err={}", .{err});
+                    return err;
+                };
                 errdefer color.deinit();
 
                 var custom_shader_state =
                     if (custom_shaders)
-                        try CustomShaderState.init(api)
+                        CustomShaderState.init(api) catch |err| {
+                            cmuxSurfaceBootstrapTrace("FrameState.init custom shader state failed err={}", .{err});
+                            return err;
+                        }
                     else
                         null;
                 errdefer if (custom_shader_state) |*state| state.deinit();
 
                 // Initialize the target. Just as with the other resources,
                 // start it off as small as we can since it'll be resized.
-                const target = try api.initTarget(1, 1);
+                const target = api.initTarget(1, 1) catch |err| {
+                    cmuxSurfaceBootstrapTrace("FrameState.init target failed err={}", .{err});
+                    return err;
+                };
 
                 return .{
                     .uniforms = uniforms,
@@ -662,26 +700,39 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         };
 
         pub fn init(alloc: Allocator, options: renderer.Options) !Self {
+            cmuxSurfaceBootstrapTrace("Renderer.init begin", .{});
             // Initialize our graphics API wrapper, this will prepare the
             // surface provided by the apprt and set up any API-specific
             // GPU resources.
-            var api = try GraphicsAPI.init(alloc, options);
+            var api = GraphicsAPI.init(alloc, options) catch |err| {
+                cmuxSurfaceBootstrapTrace("Renderer.init GraphicsAPI.init failed err={}", .{err});
+                return err;
+            };
             errdefer api.deinit();
+            cmuxSurfaceBootstrapTrace("Renderer.init GraphicsAPI.init ok", .{});
 
             const has_custom_shaders = options.config.custom_shaders.value.items.len > 0;
 
             // Prepare our swap chain
-            var swap_chain = try SwapChain.init(
+            var swap_chain = SwapChain.init(
                 api,
                 has_custom_shaders,
-            );
+            ) catch |err| {
+                cmuxSurfaceBootstrapTrace("Renderer.init SwapChain.init failed err={}", .{err});
+                return err;
+            };
             errdefer swap_chain.deinit();
+            cmuxSurfaceBootstrapTrace("Renderer.init SwapChain.init ok", .{});
 
             // Create the font shaper.
-            var font_shaper = try font.Shaper.init(alloc, .{
+            var font_shaper = font.Shaper.init(alloc, .{
                 .features = options.config.font_features.items,
-            });
+            }) catch |err| {
+                cmuxSurfaceBootstrapTrace("Renderer.init font.Shaper.init failed err={}", .{err});
+                return err;
+            };
             errdefer font_shaper.deinit();
+            cmuxSurfaceBootstrapTrace("Renderer.init font.Shaper.init ok", .{});
 
             // Initialize all the data that requires a critical font section.
             const font_critical: struct {
@@ -696,13 +747,24 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             };
 
             const display_link: ?DisplayLink = switch (builtin.os.tag) {
-                .macos => if (options.config.vsync)
-                    try macos.video.DisplayLink.createWithActiveCGDisplays()
-                else
-                    null,
+                .macos => blk: {
+                    if (!options.config.vsync) break :blk null;
+                    break :blk macos.video.DisplayLink.createWithActiveCGDisplays() catch |err| {
+                        log.warn(
+                            "display link unavailable, falling back to timer-driven rendering err={}",
+                            .{err}
+                        );
+                        cmuxSurfaceBootstrapTrace(
+                            "Renderer.init DisplayLink.create unavailable err={}, continuing without vsync",
+                            .{err}
+                        );
+                        break :blk null;
+                    };
+                },
                 else => null,
             };
             errdefer if (display_link) |v| v.release();
+            cmuxSurfaceBootstrapTrace("Renderer.init display_link ok", .{});
 
             var result: Self = .{
                 .alloc = alloc,

@@ -23,6 +23,17 @@ const Config = configpkg.Config;
 
 const log = std.log.scoped(.embedded_window);
 
+fn cmuxSurfaceBootstrapTraceEnabled() bool {
+    return std.posix.getenv("CMUX_SURFACE_BOOTSTRAP_DEBUG") != null or
+        std.posix.getenv("CMUX_PANE_STRIP_MOTION_SETUP") != null or
+        std.posix.getenv("CMUX_UI_TEST_PANE_STRIP_MOTION_SETUP") != null;
+}
+
+fn cmuxSurfaceBootstrapTrace(comptime fmt: []const u8, args: anytype) void {
+    if (!cmuxSurfaceBootstrapTraceEnabled()) return;
+    std.debug.print("[CMUXSURFACE] " ++ fmt ++ "\n", args);
+}
+
 pub const resourcesDir = internal_os.resourcesDir;
 
 pub const App = struct {
@@ -238,14 +249,33 @@ pub const App = struct {
 
     /// Create a new surface for the app.
     fn newSurface(self: *App, opts: Surface.Options) !*Surface {
+        cmuxSurfaceBootstrapTrace(
+            "app.newSurface begin context={} scale={d:.3} font={d:.3} env_count={} wd={} cmd={}",
+            .{
+                opts.context,
+                opts.scale_factor,
+                opts.font_size,
+                opts.env_var_count,
+                @intFromBool(opts.working_directory != null),
+                @intFromBool(opts.command != null),
+            },
+        );
+
         // Grab a surface allocation because we're going to need it.
-        var surface = try self.core_app.alloc.create(Surface);
+        var surface = self.core_app.alloc.create(Surface) catch |err| {
+            cmuxSurfaceBootstrapTrace("app.newSurface alloc failed err={}", .{err});
+            return err;
+        };
         errdefer self.core_app.alloc.destroy(surface);
 
         // Create the surface
-        try surface.init(self, opts);
+        surface.init(self, opts) catch |err| {
+            cmuxSurfaceBootstrapTrace("app.newSurface init failed err={}", .{err});
+            return err;
+        };
         errdefer surface.deinit();
 
+        cmuxSurfaceBootstrapTrace("app.newSurface success surface_ptr=0x{x}", .{@intFromPtr(surface)});
         return surface;
     }
 
@@ -462,6 +492,17 @@ pub const Surface = struct {
     };
 
     pub fn init(self: *Surface, app: *App, opts: Options) !void {
+        cmuxSurfaceBootstrapTrace(
+            "embedded.Surface.init begin context={} scale={d:.3} font={d:.3} env_count={} wd={} cmd={}",
+            .{
+                opts.context,
+                opts.scale_factor,
+                opts.font_size,
+                opts.env_var_count,
+                @intFromBool(opts.working_directory != null),
+                @intFromBool(opts.command != null),
+            },
+        );
         self.* = .{
             .app = app,
             .platform = try .init(opts.platform_tag, opts.platform),
@@ -476,12 +517,20 @@ pub const Surface = struct {
         };
 
         // Add ourselves to the list of surfaces on the app.
-        try app.core_app.addSurface(self);
+        app.core_app.addSurface(self) catch |err| {
+            cmuxSurfaceBootstrapTrace("embedded.Surface.init addSurface failed err={}", .{err});
+            return err;
+        };
         errdefer app.core_app.deleteSurface(self);
+        cmuxSurfaceBootstrapTrace("embedded.Surface.init addSurface ok", .{});
 
         // Shallow copy the config so that we can modify it.
-        var config = try apprt.surface.newConfig(app.core_app, &app.config, opts.context);
+        var config = apprt.surface.newConfig(app.core_app, &app.config, opts.context) catch |err| {
+            cmuxSurfaceBootstrapTrace("embedded.Surface.init newConfig failed err={}", .{err});
+            return err;
+        };
         defer config.deinit();
+        cmuxSurfaceBootstrapTrace("embedded.Surface.init newConfig ok", .{});
 
         // If we have a working directory from the options then we set it.
         if (opts.working_directory) |c_wd| {
@@ -566,21 +615,30 @@ pub const Surface = struct {
 
         // Initialize our surface right away. We're given a view that is
         // ready to use.
-        try self.core_surface.init(
+        self.core_surface.init(
             app.core_app.alloc,
             &config,
             app.core_app,
             app,
             self,
-        );
+        ) catch |err| {
+            cmuxSurfaceBootstrapTrace("embedded.Surface.init core_surface.init failed err={}", .{err});
+            return err;
+        };
         errdefer self.core_surface.deinit();
+        cmuxSurfaceBootstrapTrace("embedded.Surface.init core_surface.init ok", .{});
 
         // If our options requested a specific font-size, set that.
         if (opts.font_size != 0) {
             var font_size = self.core_surface.font_size;
             font_size.points = opts.font_size;
-            try self.core_surface.setFontSize(font_size);
+            self.core_surface.setFontSize(font_size) catch |err| {
+                cmuxSurfaceBootstrapTrace("embedded.Surface.init setFontSize failed err={}", .{err});
+                return err;
+            };
         }
+
+        cmuxSurfaceBootstrapTrace("embedded.Surface.init success", .{});
     }
 
     pub fn deinit(self: *Surface) void {
@@ -1537,6 +1595,7 @@ pub const CAPI = struct {
         opts: *const apprt.Surface.Options,
     ) ?*Surface {
         return surface_new_(app, opts) catch |err| {
+            cmuxSurfaceBootstrapTrace("ghostty_surface_new failed err={}", .{err});
             log.err("error initializing surface err={}", .{err});
             return null;
         };

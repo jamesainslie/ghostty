@@ -1,6 +1,5 @@
 const std = @import("std");
 const assert = std.debug.assert;
-const Allocator = std.mem.Allocator;
 const c = @import("c.zig").c;
 
 pub const DisplayLink = opaque {
@@ -8,14 +7,18 @@ pub const DisplayLink = opaque {
         InvalidOperation,
     };
 
-    pub fn createWithActiveCGDisplays() Allocator.Error!*DisplayLink {
+    pub const CreateError = error{
+        Unavailable,
+    };
+
+    pub fn createWithActiveCGDisplays() CreateError!*DisplayLink {
         var result: ?*DisplayLink = null;
         if (c.CVDisplayLinkCreateWithActiveCGDisplays(
             @ptrCast(&result),
         ) != c.kCVReturnSuccess)
-            return error.OutOfMemory;
+            return error.Unavailable;
 
-        return result orelse error.OutOfMemory;
+        return result orelse error.Unavailable;
     }
 
     pub fn release(self: *DisplayLink) void {
