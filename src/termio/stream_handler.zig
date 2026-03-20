@@ -374,13 +374,11 @@ pub const StreamHandler = struct {
     }
 
     fn dcsCommand(self: *StreamHandler, cmd: *terminal.dcs.Command) !void {
-        // log.warn("DCS command: {}", .{cmd});
         switch (cmd.*) {
             .tmux => |tmux| tmux: {
                 // If tmux control mode is disabled at the build level,
                 // then this whole block shouldn't be analyzed.
                 if (comptime !tmux_enabled) break :tmux;
-                log.info("tmux control mode event cmd={f}", .{tmux});
 
                 switch (tmux) {
                     .enter => {
@@ -391,6 +389,13 @@ pub const StreamHandler = struct {
                         viewer.* = try .init(self.alloc);
                         errdefer viewer.deinit();
                         self.tmux_viewer = viewer;
+
+                        // Notify the embedder that tmux control mode has entered
+                        self.surfaceMessageWriter(.{
+                            .tmux_control = .{
+                                .event = .enter,
+                            },
+                        });
                         break :tmux;
                     },
 
@@ -401,6 +406,13 @@ pub const StreamHandler = struct {
                             self.alloc.destroy(viewer);
                             self.tmux_viewer = null;
                         }
+
+                        // Notify the embedder that tmux control mode has exited
+                        self.surfaceMessageWriter(.{
+                            .tmux_control = .{
+                                .event = .exit,
+                            },
+                        });
 
                         // And always break since we assert below
                         // that we're not handling an exit command.
@@ -425,7 +437,6 @@ pub const StreamHandler = struct {
                 };
 
                 for (viewer.next(.{ .tmux = tmux })) |action| {
-                    log.info("tmux viewer action={f}", .{action});
                     switch (action) {
                         .exit => {
                             self.surfaceMessageWriter(.{

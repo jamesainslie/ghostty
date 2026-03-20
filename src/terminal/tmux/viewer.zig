@@ -920,12 +920,13 @@ pub const Viewer = struct {
             });
         }
 
-        // Setup our windows action so the caller can process GUI
-        // window changes.
-        try actions.append(arena_alloc, .{ .windows = windows.items });
-
-        // Sync up our layouts. This will populate unknown panes, prune, etc.
+        // Sync up our layouts first. This copies the parsed windows into
+        // self.windows (persistent storage) and populates unknown panes, etc.
         try self.syncLayouts(windows.items);
+
+        // Now create the action with self.windows.items (persistent slice)
+        // instead of the local windows.items which will be freed by defer.
+        try actions.append(arena_alloc, .{ .windows = self.windows.items });
     }
 
     fn receivedPaneState(
