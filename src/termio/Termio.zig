@@ -317,6 +317,10 @@ pub fn init(self: *Termio, alloc: Allocator, opts: termio.Options) !void {
         .terminal_stream = .initAlloc(alloc, handler),
         .thread_enter_state = thread_enter_state,
     };
+
+    // Give the stream handler a pointer to the parser so it can lock
+    // DCS passthrough for tmux control mode.
+    self.terminal_stream.handler.parser = &self.terminal_stream.parser;
 }
 
 pub fn deinit(self: *Termio) void {

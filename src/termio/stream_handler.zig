@@ -70,6 +70,11 @@ pub const StreamHandler = struct {
     /// such as XTGETTCAP.
     dcs: terminal.dcs.Handler = .{},
 
+    /// Pointer to the parser in the enclosing Stream. Set by Termio after
+    /// the stream is constructed. Used to lock/unlock DCS passthrough for
+    /// tmux control mode.
+    parser: ?*terminal.Parser = null,
+
     /// The tmux control mode viewer state.
     tmux_viewer: if (tmux_enabled) ?*terminal.tmux.Viewer else void = if (tmux_enabled) null else {},
 
@@ -390,6 +395,12 @@ pub const StreamHandler = struct {
                         errdefer viewer.deinit();
                         self.tmux_viewer = viewer;
 
+                        // Lock the parser in DCS passthrough so that bytes in
+                        // tmux %output lines (which contain raw terminal data)
+                        // cannot trigger the "anywhere" transitions (CAN, SUB,
+                        // ESC, C1 controls) that would terminate the DCS.
+                        if (self.parser) |p| p.dcs_passthrough_locked = true;
+
                         // Notify the embedder that tmux control mode has entered
                         self.surfaceMessageWriter(.{
                             .tmux_control = .{
@@ -400,6 +411,9 @@ pub const StreamHandler = struct {
                     },
 
                     .exit => {
+                        // Unlock the parser's DCS passthrough.
+                        if (self.parser) |p| p.dcs_passthrough_locked = false;
+
                         // Free our viewer state if we have one
                         if (self.tmux_viewer) |viewer| {
                             viewer.deinit();
@@ -439,6 +453,9 @@ pub const StreamHandler = struct {
                 for (viewer.next(.{ .tmux = tmux })) |action| {
                     switch (action) {
                         .exit => {
+                            // Unlock the parser before notifying the embedder.
+                            if (self.parser) |p| p.dcs_passthrough_locked = false;
+
                             self.surfaceMessageWriter(.{
                                 .tmux_control = .{
                                     .event = .exit,

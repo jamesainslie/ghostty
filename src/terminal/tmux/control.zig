@@ -77,14 +77,13 @@ pub const Parser = struct {
             // Drop because we're in a broken state.
             .broken => return null,
 
-            // Waiting for a notification so if the byte is not '%' then
-            // we're in a broken state. Control mode output should always
-            // be wrapped in '%begin/%end' orelse we expect a notification.
-            // Return an exit notification.
-            .idle => if (byte != '%') {
-                self.broken();
-                return .{ .exit = {} };
-            } else {
+            // Waiting for a notification. Only '%' at the start of a line
+            // begins a valid notification. When the parser is running inside
+            // DCS passthrough (tmux control mode), raw terminal bytes (ESC,
+            // CAN, SUB, C1 controls) may appear between notifications because
+            // the DCS lock prevents the VT parser from consuming them. These
+            // inter-notification bytes are silently ignored.
+            .idle => if (byte == '%') {
                 self.buffer.clearRetainingCapacity();
                 self.state = .notification;
             },

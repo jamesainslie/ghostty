@@ -219,6 +219,14 @@ param_acc_idx: u8,
 /// Parser for OSC sequences
 osc_parser: osc.Parser,
 
+/// When true, the parser stays in dcs_passthrough and treats all bytes as
+/// DCS put data, suppressing the "anywhere" transitions (CAN, SUB, ESC, C1
+/// controls) that would normally exit DCS. This is required for tmux control
+/// mode, where the DCS payload contains raw terminal data (inside %output
+/// lines) that may include bytes the parser would otherwise interpret as
+/// DCS terminators.
+dcs_passthrough_locked: bool = false,
+
 pub fn init() Parser {
     var result: Parser = .{
         .state = .ground,
@@ -253,8 +261,15 @@ pub fn next(self: *Parser, c: u8) [3]?Action {
 
     // log.info("next: {x}", .{c});
 
-    const next_state = effect.state;
-    const action = effect.action;
+    // When dcs_passthrough is locked (tmux control mode), suppress any
+    // "anywhere" transition that would leave dcs_passthrough. All bytes
+    // are forwarded as DCS put data; the tmux control parser handles
+    // protocol-level exit (%exit) internally.
+    const next_state, const action = if (self.dcs_passthrough_locked and
+        self.state == .dcs_passthrough and effect.state != .dcs_passthrough)
+    .{ .dcs_passthrough, .put }
+    else
+        .{ effect.state, effect.action };
 
     // After generating the actions, we set our next state.
     defer self.state = next_state;
